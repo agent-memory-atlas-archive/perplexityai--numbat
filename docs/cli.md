@@ -497,8 +497,16 @@ at NDJSON record boundaries. It checkpoints every accepted prefix before
 attempting the remaining suffix. Splitting continues until delivery succeeds or
 the rejected request contains one record. A single rejected record remains
 unacknowledged and blocks later records, with its byte offset and size reported
-on stderr. Other HTTP failures and ambiguous transport errors keep their full
-unacknowledged request eligible for replay.
+on stderr. To resume, increase the receiver's body limit (including any proxy
+limit) to accept that record, or move delivery to a suitable endpoint. Changing
+the endpoint replays retained records. Keep the input and rotations until
+delivery recovers; the local 8 MiB eligibility limit below is unchanged.
+
+Other HTTP failures and ambiguous transport errors keep their full
+unacknowledged request eligible for replay. Receivers must reject a `413` request
+without ingesting it; if they ingest any part before rejecting, the split retries
+can duplicate those records. A `2xx` must mean the whole request was accepted.
+Splitting is specific to `ship`; direct HTTP output remains best-effort.
 
 `ship` never truncates or rotates the input. Retention remains the operator's
 responsibility, and undelivered records are only as durable as that file and its
@@ -510,7 +518,9 @@ Prefer an existing fleet forwarder when one is already available.
 `--http-allow-insecure` match the [scan HTTP options](#scan), including the wire
 contract and environment-only secrets. Failed delivery retries use exponential
 backoff with jitter. `ship` runs until SIGINT or SIGTERM; an in-flight request
-is bounded by `--http-timeout`.
+is bounded by `--http-timeout`. During adaptive delivery, a successful in-flight
+request is checkpointed before shutdown, and no further split request starts
+after cancellation is observed.
 
 ## hook
 

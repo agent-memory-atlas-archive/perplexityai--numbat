@@ -267,6 +267,13 @@ func TestShipPersistsAcceptedPrefixBeforeFailedSuffix(t *testing.T) {
 			mu.Unlock()
 			w.WriteHeader(http.StatusOK)
 		case 3:
+			restored, err := readShipCursor(statePath, testShipDestination)
+			mu.Lock()
+			prefixBytes := accepted.Len()
+			mu.Unlock()
+			if err != nil || restored.checkpoint.Offset != int64(prefixBytes) {
+				t.Errorf("suffix started before prefix checkpoint: offset=%d want=%d err=%v", restored.checkpoint.Offset, prefixBytes, err)
+			}
 			w.WriteHeader(http.StatusServiceUnavailable)
 		default:
 			mu.Lock()
@@ -317,12 +324,28 @@ func TestShipLeavesSingleRejectedRecordUnacknowledged(t *testing.T) {
 	dir := t.TempDir()
 	inputPath := filepath.Join(dir, "records.ndjson")
 	statePath := inputPath + ".ship-state"
-	writeSpool(t, inputPath, "oversized", 1)
+	prefix := []byte(`{"event_id":"before"}` + "\n")
+	rejected := []byte(fmt.Sprintf(`{"event_id":"large","pad":"%s"}`+"\n", strings.Repeat("x", 256)))
+	suffix := []byte(`{"event_id":"after"}` + "\n")
+	appendRaw(t, inputPath, bytes.Join([][]byte{prefix, rejected, suffix}, nil))
 
-	var attempts atomic.Int64
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		attempts.Add(1)
-		w.WriteHeader(http.StatusRequestEntityTooLarge)
+	var mu sync.Mutex
+	var accepted bytes.Buffer
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if len(body) > len(prefix) {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			return
+		}
+		mu.Lock()
+		_, _ = accepted.Write(body)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
@@ -330,21 +353,25 @@ func TestShipLeavesSingleRejectedRecordUnacknowledged(t *testing.T) {
 	if err == nil {
 		t.Fatal("single-record rejection returned no error")
 	}
-	if !strings.Contains(err.Error(), "HTTP 413") || !strings.Contains(err.Error(), "input offset 0") || !strings.Contains(err.Error(), "remains unacknowledged") {
-		t.Fatalf("error lacks operator diagnostic: %v", err)
+	for _, detail := range []string{"HTTP 413", fmt.Sprintf("%d-byte", len(rejected)), fmt.Sprintf("input offset %d", len(prefix)), "remains unacknowledged"} {
+		if !strings.Contains(err.Error(), detail) {
+			t.Fatalf("error lacks %q: %v", detail, err)
+		}
 	}
-	if cursor.checkpoint.Offset != 0 {
-		t.Fatalf("offset=%d, want rejected record unacknowledged", cursor.checkpoint.Offset)
+	if cursor.checkpoint.Offset != int64(len(prefix)) {
+		t.Fatalf("offset=%d, want only prefix acknowledged (%d bytes)", cursor.checkpoint.Offset, len(prefix))
 	}
 	restored, readErr := readShipCursor(statePath, testShipDestination)
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if restored.checkpoint.Offset != 0 {
-		t.Fatalf("persisted offset=%d, want 0", restored.checkpoint.Offset)
+	if restored.checkpoint.Offset != int64(len(prefix)) {
+		t.Fatalf("persisted offset=%d, want %d", restored.checkpoint.Offset, len(prefix))
 	}
-	if attempts.Load() != 1 {
-		t.Fatalf("requests=%d, want one", attempts.Load())
+	mu.Lock()
+	defer mu.Unlock()
+	if !bytes.Equal(accepted.Bytes(), prefix) {
+		t.Fatalf("accepted=%q, want prefix only %q", accepted.Bytes(), prefix)
 	}
 }
 
@@ -353,10 +380,31 @@ func TestShipAmbiguousTransportFailureKeepsCheckpoint(t *testing.T) {
 	dir := t.TempDir()
 	inputPath := filepath.Join(dir, "records.ndjson")
 	statePath := inputPath + ".ship-state"
-	writeSpool(t, inputPath, "ambiguous", 3)
+	size := writeSpool(t, inputPath, "ambiguous", 3)
+	want, err := os.ReadFile(inputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 
+	var healthy atomic.Bool
+	var attempts atomic.Int64
+	var mu sync.Mutex
+	var received bytes.Buffer
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		attempts.Add(1)
+		mu.Lock()
+		_, _ = received.Write(body)
+		mu.Unlock()
+		if healthy.Load() {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		conn, _, err := w.(http.Hijacker).Hijack()
 		if err != nil {
 			t.Errorf("hijack connection: %v", err)
@@ -370,8 +418,8 @@ func TestShipAmbiguousTransportFailureKeepsCheckpoint(t *testing.T) {
 	if err == nil {
 		t.Fatal("ambiguous transport failure returned no error")
 	}
-	if cursor.checkpoint.Offset != 0 {
-		t.Fatalf("offset=%d, want safe replay from 0", cursor.checkpoint.Offset)
+	if cursor.checkpoint.Offset != 0 || attempts.Load() != 1 {
+		t.Fatalf("offset=%d requests=%d, want one unacknowledged request", cursor.checkpoint.Offset, attempts.Load())
 	}
 	restored, readErr := readShipCursor(statePath, testShipDestination)
 	if readErr != nil {
@@ -379,6 +427,57 @@ func TestShipAmbiguousTransportFailureKeepsCheckpoint(t *testing.T) {
 	}
 	if restored.checkpoint.Offset != 0 {
 		t.Fatalf("persisted offset=%d, want safe replay from 0", restored.checkpoint.Offset)
+	}
+	healthy.Store(true)
+	restored, err = drainAvailable(ctx, inputPath, statePath, restored, maxShipBatchBytes, newSinkFactory(srv.URL), io.Discard)
+	if err != nil || restored.checkpoint.Offset != size || attempts.Load() != 2 {
+		t.Fatalf("replay: offset=%d/%d requests=%d err=%v", restored.checkpoint.Offset, size, attempts.Load(), err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !bytes.Equal(received.Bytes(), bytes.Repeat(want, 2)) {
+		t.Fatal("restart did not replay the full ambiguous request intact")
+	}
+}
+
+func TestShipStopsBetweenSplitRequests(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "records.ndjson")
+	statePath := inputPath + ".ship-state"
+	size := writeSpool(t, inputPath, "cancel", 4)
+
+	var attempts atomic.Int64
+	var acceptedBytes atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n, err := io.Copy(io.Discard, r.Body)
+		if err != nil {
+			t.Errorf("read request: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		attempts.Add(1)
+		if n == size {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			return
+		}
+		acceptedBytes.Add(n)
+		cancel()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cursor, err := drainAvailable(ctx, inputPath, statePath, newTestShipCursor(), maxShipBatchBytes, newSinkFactory(srv.URL), io.Discard)
+	if !errors.Is(err, context.Canceled) || attempts.Load() != 2 {
+		t.Fatalf("requests=%d err=%v, want cancellation after the first split request", attempts.Load(), err)
+	}
+	if cursor.checkpoint.Offset != acceptedBytes.Load() || cursor.checkpoint.Offset <= 0 || cursor.checkpoint.Offset >= size {
+		t.Fatalf("offset=%d accepted=%d, want acknowledged proper prefix of %d", cursor.checkpoint.Offset, acceptedBytes.Load(), size)
+	}
+	restored, err := readShipCursor(statePath, testShipDestination)
+	if err != nil || restored.checkpoint.Offset != cursor.checkpoint.Offset {
+		t.Fatalf("in-flight success not persisted: offset=%d want=%d err=%v", restored.checkpoint.Offset, cursor.checkpoint.Offset, err)
 	}
 }
 
@@ -671,45 +770,6 @@ func TestShipOversizedBatchLineStillShips(t *testing.T) {
 	}
 	if cursor.checkpoint.Offset != int64(len(big+small)) || sink.uniqueDelivered() != 2 {
 		t.Fatalf("offset=%d/%d delivered=%d/2", cursor.checkpoint.Offset, len(big+small), sink.uniqueDelivered())
-	}
-}
-
-func TestShipRejectedFourMiBTargetOvershootKeepsCheckpoint(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	inputPath := filepath.Join(dir, "records.ndjson")
-	statePath := filepath.Join(dir, "records.ship-state")
-	const headroom = 64
-	prefix := `{"record_type":"event","event_id":"large","pad":"`
-	suffix := `"}` + "\n"
-	first := prefix + strings.Repeat("x", maxShipBatchBytes-len(prefix)-len(suffix)-headroom) + suffix
-	second := fmt.Sprintf(`{"record_type":"event","event_id":"next","pad":"%s"}`, strings.Repeat("y", 128)) + "\n"
-	appendRaw(t, inputPath, []byte(first+second))
-
-	var received atomic.Int64
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n, _ := io.Copy(io.Discard, r.Body)
-		received.Store(n)
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer srv.Close()
-
-	cursor, err := drainAvailable(ctx, inputPath, statePath, newTestShipCursor(), maxShipBatchBytes, newSinkFactory(srv.URL), io.Discard)
-	if err == nil {
-		t.Fatal("rejected batch returned no error")
-	}
-	if received.Load() <= maxShipBatchBytes {
-		t.Fatalf("request bytes=%d, want record-boundary overshoot beyond %d", received.Load(), maxShipBatchBytes)
-	}
-	if cursor.checkpoint.Offset != 0 {
-		t.Fatalf("offset=%d, want rejected batch unacknowledged", cursor.checkpoint.Offset)
-	}
-	restored, readErr := readShipCursor(statePath, testShipDestination)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if restored.checkpoint.Offset != 0 {
-		t.Fatalf("persisted offset=%d, want 0", restored.checkpoint.Offset)
 	}
 }
 

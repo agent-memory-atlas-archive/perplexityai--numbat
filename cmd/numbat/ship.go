@@ -379,7 +379,7 @@ func drainAvailable(ctx context.Context, inputPath, statePath string, cursor shi
 			cursor.pending = false
 			return nil
 		}
-		if err := shipBatchAdaptive(factory, batch.blob, batchOffset, acknowledge); err != nil {
+		if err := shipBatchAdaptive(ctx, factory, batch.blob, batchOffset, acknowledge); err != nil {
 			return cursor, err
 		}
 	}
@@ -650,7 +650,10 @@ func shipBatch(factory shipSinkFactory, blob []byte) error {
 	return nil
 }
 
-func shipBatchAdaptive(factory shipSinkFactory, blob []byte, offset int64, acknowledge func([]byte) error) error {
+func shipBatchAdaptive(ctx context.Context, factory shipSinkFactory, blob []byte, offset int64, acknowledge func([]byte) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	err := shipBatch(factory, blob)
 	if err == nil {
 		return acknowledge(blob)
@@ -663,10 +666,10 @@ func shipBatchAdaptive(factory shipSinkFactory, blob []byte, offset int64, ackno
 	if !ok {
 		return fmt.Errorf("deliver: HTTP 413 rejected the %d-byte NDJSON record at input offset %d. Record remains unacknowledged: %w", len(blob), offset, err)
 	}
-	if err := shipBatchAdaptive(factory, left, offset, acknowledge); err != nil {
+	if err := shipBatchAdaptive(ctx, factory, left, offset, acknowledge); err != nil {
 		return err
 	}
-	return shipBatchAdaptive(factory, right, offset+int64(len(left)), acknowledge)
+	return shipBatchAdaptive(ctx, factory, right, offset+int64(len(left)), acknowledge)
 }
 
 func splitShipBatch(blob []byte) ([]byte, []byte, bool) {
