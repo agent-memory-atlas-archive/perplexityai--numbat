@@ -70,7 +70,8 @@ proxy.
 Where the host has no external shipper, `numbat ship` is an optional native
 forwarder that tails the file output and delivers eligible retained records
 at-least-once while their input segments remain available, off the hook's
-critical path (see [cli.md](cli.md#ship)). Records larger than 8 MiB are skipped.
+critical path (see [cli.md](cli.md#ship)). Records larger than 8 MiB
+or individually rejected with HTTP `413` are logged and skipped.
 It uses the capture file as its only on-disk queue and does not replace a mature
 shipper where one already runs. Configure
 the hook with file output only; combining direct HTTP with `ship` sends the same

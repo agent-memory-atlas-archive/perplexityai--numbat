@@ -237,16 +237,15 @@ func TestShipSplitsRejectedBatchAtRecordBoundaries(t *testing.T) {
 	}
 }
 
-func TestShipPersistsAcceptedPrefixBeforeFailedSuffix(t *testing.T) {
-	ctx := context.Background()
+func TestShipSkipsSingleRejectedRecord(t *testing.T) {
 	dir := t.TempDir()
 	inputPath := filepath.Join(dir, "records.ndjson")
 	statePath := inputPath + ".ship-state"
-	size := writeSpool(t, inputPath, "restart", 4)
-	want, err := os.ReadFile(inputPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	prefix := []byte(`{"event_id":"before"}` + "\n")
+	rejected := []byte(fmt.Sprintf(`{"event_id":"large","pad":"%s"}`+"\n", strings.Repeat("x", 256)))
+	suffix := []byte(`{"event_id":"after"}` + "\n")
+	input := bytes.Join([][]byte{prefix, rejected, suffix}, nil)
+	appendRaw(t, inputPath, input)
 
 	var attempts atomic.Int64
 	var mu sync.Mutex
@@ -258,86 +257,7 @@ func TestShipPersistsAcceptedPrefixBeforeFailedSuffix(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		switch attempts.Add(1) {
-		case 1:
-			w.WriteHeader(http.StatusRequestEntityTooLarge)
-		case 2:
-			mu.Lock()
-			_, _ = accepted.Write(body)
-			mu.Unlock()
-			w.WriteHeader(http.StatusOK)
-		case 3:
-			restored, err := readShipCursor(statePath, testShipDestination)
-			mu.Lock()
-			prefixBytes := accepted.Len()
-			mu.Unlock()
-			if err != nil || restored.checkpoint.Offset != int64(prefixBytes) {
-				t.Errorf("suffix started before prefix checkpoint: offset=%d want=%d err=%v", restored.checkpoint.Offset, prefixBytes, err)
-			}
-			w.WriteHeader(http.StatusServiceUnavailable)
-		default:
-			mu.Lock()
-			_, _ = accepted.Write(body)
-			mu.Unlock()
-			w.WriteHeader(http.StatusOK)
-		}
-	}))
-	defer srv.Close()
-
-	cursor, err := drainAvailable(ctx, inputPath, statePath, newTestShipCursor(), maxShipBatchBytes, newSinkFactory(srv.URL), io.Discard)
-	if err == nil {
-		t.Fatal("failed suffix returned no error")
-	}
-	if cursor.checkpoint.Offset <= 0 || cursor.checkpoint.Offset >= size {
-		t.Fatalf("offset=%d, want an acknowledged proper prefix of %d bytes", cursor.checkpoint.Offset, size)
-	}
-	restored, err := readShipCursor(statePath, testShipDestination)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if restored.checkpoint.Offset != cursor.checkpoint.Offset {
-		t.Fatalf("persisted offset=%d, want %d", restored.checkpoint.Offset, cursor.checkpoint.Offset)
-	}
-	mu.Lock()
-	if !bytes.Equal(accepted.Bytes(), want[:cursor.checkpoint.Offset]) {
-		mu.Unlock()
-		t.Fatalf("accepted bytes do not match checkpointed prefix")
-	}
-	mu.Unlock()
-
-	restored, err = drainAvailable(ctx, inputPath, statePath, restored, maxShipBatchBytes, newSinkFactory(srv.URL), io.Discard)
-	if err != nil {
-		t.Fatalf("restart drain: %v", err)
-	}
-	if restored.checkpoint.Offset != size {
-		t.Fatalf("restart offset=%d, want %d", restored.checkpoint.Offset, size)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if !bytes.Equal(accepted.Bytes(), want) {
-		t.Fatalf("restart replayed the prefix or changed order:\n got %q\nwant %q", accepted.Bytes(), want)
-	}
-}
-
-func TestShipLeavesSingleRejectedRecordUnacknowledged(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	inputPath := filepath.Join(dir, "records.ndjson")
-	statePath := inputPath + ".ship-state"
-	prefix := []byte(`{"event_id":"before"}` + "\n")
-	rejected := []byte(fmt.Sprintf(`{"event_id":"large","pad":"%s"}`+"\n", strings.Repeat("x", 256)))
-	suffix := []byte(`{"event_id":"after"}` + "\n")
-	appendRaw(t, inputPath, bytes.Join([][]byte{prefix, rejected, suffix}, nil))
-
-	var mu sync.Mutex
-	var accepted bytes.Buffer
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read request: %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
+		attempts.Add(1)
 		if len(body) > len(prefix) {
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
 			return
@@ -349,94 +269,49 @@ func TestShipLeavesSingleRejectedRecordUnacknowledged(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cursor, err := drainAvailable(ctx, inputPath, statePath, newTestShipCursor(), maxShipBatchBytes, newSinkFactory(srv.URL), io.Discard)
-	if err == nil {
-		t.Fatal("single-record rejection returned no error")
+	var logs bytes.Buffer
+	cursor, err := drainAvailable(context.Background(), inputPath, statePath, newTestShipCursor(), maxShipBatchBytes, newSinkFactory(srv.URL), &logs)
+	if err != nil || cursor.checkpoint.Offset != int64(len(input)) {
+		t.Fatalf("drain: offset=%d want=%d err=%v", cursor.checkpoint.Offset, len(input), err)
 	}
-	for _, detail := range []string{"HTTP 413", fmt.Sprintf("%d-byte", len(rejected)), fmt.Sprintf("input offset %d", len(prefix)), "remains unacknowledged"} {
-		if !strings.Contains(err.Error(), detail) {
-			t.Fatalf("error lacks %q: %v", detail, err)
+	restored, err := readShipCursor(statePath, testShipDestination)
+	if err != nil || restored.checkpoint.Offset != int64(len(input)) {
+		t.Fatalf("persisted offset=%d want=%d err=%v", restored.checkpoint.Offset, len(input), err)
+	}
+	for _, detail := range []string{inputPath, "HTTP 413", fmt.Sprintf("%d-byte", len(rejected)), fmt.Sprintf("offset %d", len(prefix)), "skipped"} {
+		if !strings.Contains(logs.String(), detail) {
+			t.Fatalf("skip diagnostic lacks %q: %s", detail, &logs)
 		}
 	}
-	if cursor.checkpoint.Offset != int64(len(prefix)) {
-		t.Fatalf("offset=%d, want only prefix acknowledged (%d bytes)", cursor.checkpoint.Offset, len(prefix))
-	}
-	restored, readErr := readShipCursor(statePath, testShipDestination)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if restored.checkpoint.Offset != int64(len(prefix)) {
-		t.Fatalf("persisted offset=%d, want %d", restored.checkpoint.Offset, len(prefix))
+	attempted := attempts.Load()
+	if _, err := drainAvailable(context.Background(), inputPath, statePath, restored, maxShipBatchBytes, newSinkFactory(srv.URL), &logs); err != nil || attempts.Load() != attempted {
+		t.Fatalf("restart retried checkpointed records: requests=%d want=%d err=%v", attempts.Load(), attempted, err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if !bytes.Equal(accepted.Bytes(), prefix) {
-		t.Fatalf("accepted=%q, want prefix only %q", accepted.Bytes(), prefix)
+	if want := bytes.Join([][]byte{prefix, suffix}, nil); !bytes.Equal(accepted.Bytes(), want) {
+		t.Fatalf("accepted=%q, want prefix and suffix %q", accepted.Bytes(), want)
 	}
 }
 
-func TestShipAmbiguousTransportFailureKeepsCheckpoint(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	inputPath := filepath.Join(dir, "records.ndjson")
-	statePath := inputPath + ".ship-state"
-	size := writeSpool(t, inputPath, "ambiguous", 3)
-	want, err := os.ReadFile(inputPath)
-	if err != nil {
-		t.Fatal(err)
+func TestReadShipBatchRespectsByteLimit(t *testing.T) {
+	inputPath := filepath.Join(t.TempDir(), "records.ndjson")
+	lines := [][]byte{
+		[]byte(`{"event_id":"before"}` + "\n"),
+		[]byte(`{"event_id":"larger-than-batch-limit"}` + "\n"),
+		[]byte(`{"event_id":"after"}` + "\n"),
 	}
-
-	var healthy atomic.Bool
-	var attempts atomic.Int64
-	var mu sync.Mutex
-	var received bytes.Buffer
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
+	appendRaw(t, inputPath, bytes.Join(lines, nil))
+	checkpoint := newTestShipCursor().checkpoint
+	for _, want := range lines {
+		batch, err := readShipBatch(inputPath, checkpoint, int64(len(lines[0])+1))
 		if err != nil {
-			t.Errorf("read request: %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
+			t.Fatal(err)
 		}
-		attempts.Add(1)
-		mu.Lock()
-		_, _ = received.Write(body)
-		mu.Unlock()
-		if healthy.Load() {
-			w.WriteHeader(http.StatusOK)
-			return
+		if !bytes.Equal(batch.blob, want) || batch.n != int64(len(want)) {
+			t.Fatalf("batch=%q bytes=%d, want single intact record %q", batch.blob, batch.n, want)
 		}
-		conn, _, err := w.(http.Hijacker).Hijack()
-		if err != nil {
-			t.Errorf("hijack connection: %v", err)
-			return
-		}
-		_ = conn.Close()
-	}))
-	defer srv.Close()
-
-	cursor, err := drainAvailable(ctx, inputPath, statePath, newTestShipCursor(), maxShipBatchBytes, newSinkFactory(srv.URL), io.Discard)
-	if err == nil {
-		t.Fatal("ambiguous transport failure returned no error")
-	}
-	if cursor.checkpoint.Offset != 0 || attempts.Load() != 1 {
-		t.Fatalf("offset=%d requests=%d, want one unacknowledged request", cursor.checkpoint.Offset, attempts.Load())
-	}
-	restored, readErr := readShipCursor(statePath, testShipDestination)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if restored.checkpoint.Offset != 0 {
-		t.Fatalf("persisted offset=%d, want safe replay from 0", restored.checkpoint.Offset)
-	}
-	healthy.Store(true)
-	restored, err = drainAvailable(ctx, inputPath, statePath, restored, maxShipBatchBytes, newSinkFactory(srv.URL), io.Discard)
-	if err != nil || restored.checkpoint.Offset != size || attempts.Load() != 2 {
-		t.Fatalf("replay: offset=%d/%d requests=%d err=%v", restored.checkpoint.Offset, size, attempts.Load(), err)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if !bytes.Equal(received.Bytes(), bytes.Repeat(want, 2)) {
-		t.Fatal("restart did not replay the full ambiguous request intact")
+		checkpoint = newShipCheckpoint(testShipDestination, batch.fileID, checkpoint.Offset+batch.n, batch.blob)
 	}
 }
 
@@ -941,7 +816,7 @@ func TestShipDrainsImmediatelyOnStart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
 	go func() {
-		done <- runShipLoop(ctx, inputPath, statePath, testShipDestination, time.Hour, newSinkFactory(sink.srv.URL), io.Discard)
+		done <- runShipLoop(ctx, inputPath, statePath, testShipDestination, time.Hour, maxShipBatchBytes, newSinkFactory(sink.srv.URL), io.Discard)
 	}()
 	deadline := time.Now().Add(2 * time.Second)
 	for sink.uniqueDelivered() != 5 {

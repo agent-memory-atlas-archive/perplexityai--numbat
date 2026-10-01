@@ -450,10 +450,11 @@ collector for that telemetry.
 
 `ship` is an optional forwarder for hosts without an existing log shipper. It
 tails a numbat NDJSON file and sends batches to an HTTP endpoint outside the
-agent's hook path. Its state advances only after a `2xx`, so eligible retained
-records are delivered at-least-once across endpoint outages and process restarts
-while the input and its rotations remain available. Records larger than 8 MiB
-are not eligible for HTTP delivery, as detailed below.
+agent's hook path. Accepted batches advance the checkpoint only after a `2xx`.
+Eligible retained records are delivered at-least-once across endpoint outages
+and process restarts while the input and its rotations remain available.
+Records larger than 8 MiB or individually rejected with HTTP `413` are logged
+and skipped, advancing the checkpoint as detailed below.
 
 Use file-only hook output with `ship`. Selecting direct HTTP on the same hook
 would send each record through both paths.
@@ -464,6 +465,8 @@ would send each record through both paths.
 --input-file PATH            append-only NDJSON file to ship (required)
 --state-file PATH            delivery checkpoint (default <input-file>.ship-state)
 --poll DURATION              interval between input-file polls (default 2s)
+--max-batch-bytes N           maximum uncompressed bytes per batch (1..4194304;
+                             default 4194304); larger single records sent alone
 --http-url URL               ingest URL (required)
 --http-timeout DURATION      request timeout (default 30s)
 --http-auth MODE             none, bearer, or hmac-sha256 (default none)
@@ -492,15 +495,23 @@ active file; a segment deleted during an outage cannot be recovered.
 Changing the endpoint or losing valid state replays retained records. Receivers
 must tolerate duplicates, using stable record identifiers where present.
 
+Use `--max-batch-bytes 900000` for a receiver or proxy configured with a 1 MB
+request limit, leaving room for headers and other request overhead. For
+devbox/Panther delivery, this also stays below a 1 MiB wire-body limit; verify
+the effective limit across the ingest path. The default remains 4 MiB. The limit counts NDJSON
+bytes before optional gzip compression, not headers. A single record larger
+than the batch limit is attempted alone, so a record that the receiver accepts
+is not discarded merely because it exceeds the configured batch size.
+
 When a receiver returns HTTP `413`, `ship` retries smaller requests split only
 at NDJSON record boundaries. It checkpoints every accepted prefix before
-attempting the remaining suffix. Splitting continues until delivery succeeds or
-the rejected request contains one record. A single rejected record remains
-unacknowledged and blocks later records, with its byte offset and size reported
-on stderr. To resume, increase the receiver's body limit (including any proxy
-limit) to accept that record, or move delivery to a suitable endpoint. Changing
-the endpoint replays retained records. Keep the input and rotations until
-delivery recovers; the local 8 MiB eligibility limit below is unchanged.
+attempting the remaining suffix. If one record is still rejected with `413`,
+`ship` logs its input path, byte offset and size on stderr, advances the durable
+checkpoint past it, and continues delivering later records. That record remains
+in the input file but is skipped from HTTP delivery, like records over the local
+8 MiB limit. Retain the input and rotations if these records need to be recovered
+through a receiver that accepts them. Changing the endpoint replays retained
+records, including previously skipped records.
 
 Other HTTP failures and ambiguous transport errors keep their full
 unacknowledged request eligible for replay. Receivers must reject a `413` request
