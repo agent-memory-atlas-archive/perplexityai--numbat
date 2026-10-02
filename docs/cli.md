@@ -450,10 +450,11 @@ collector for that telemetry.
 
 `ship` is an optional forwarder for hosts without an existing log shipper. It
 tails a numbat NDJSON file and sends batches to an HTTP endpoint outside the
-agent's hook path. Its state advances only after a `2xx`, so eligible retained
-records are delivered at-least-once across endpoint outages and process restarts
-while the input and its rotations remain available. Records larger than 8 MiB
-are not eligible for HTTP delivery, as detailed below.
+agent's hook path. Accepted batches advance the checkpoint only after a `2xx`.
+Eligible retained records are delivered at-least-once across endpoint outages
+and process restarts while the input and its rotations remain available.
+Records larger than 8 MiB or individually rejected with HTTP `413` are logged
+and skipped, advancing the checkpoint as detailed below.
 
 Use file-only hook output with `ship`. Selecting direct HTTP on the same hook
 would send each record through both paths.
@@ -464,6 +465,8 @@ would send each record through both paths.
 --input-file PATH            append-only NDJSON file to ship (required)
 --state-file PATH            delivery checkpoint (default <input-file>.ship-state)
 --poll DURATION              interval between input-file polls (default 2s)
+--max-batch-bytes N           maximum uncompressed bytes per batch (1..4194304;
+                             default 4194304); larger single records sent alone
 --http-url URL               ingest URL (required)
 --http-timeout DURATION      request timeout (default 30s)
 --http-auth MODE             none, bearer, or hmac-sha256 (default none)
@@ -492,6 +495,30 @@ active file; a segment deleted during an outage cannot be recovered.
 Changing the endpoint or losing valid state replays retained records. Receivers
 must tolerate duplicates, using stable record identifiers where present.
 
+Use `--max-batch-bytes 900000` for a receiver or proxy configured with a 1 MB
+request limit, leaving room for headers and other request overhead. For
+devbox/Panther delivery, this also stays below a 1 MiB wire-body limit; verify
+the effective limit across the ingest path. The default remains 4 MiB. The limit counts NDJSON
+bytes before optional gzip compression, not headers. A single record larger
+than the batch limit is attempted alone, so a record that the receiver accepts
+is not discarded merely because it exceeds the configured batch size.
+
+When a receiver returns HTTP `413`, `ship` retries smaller requests split only
+at NDJSON record boundaries. It checkpoints every accepted prefix before
+attempting the remaining suffix. If one record is still rejected with `413`,
+`ship` logs its input path, byte offset and size on stderr, advances the durable
+checkpoint past it, and continues delivering later records. That record remains
+in the input file but is skipped from HTTP delivery, like records over the local
+8 MiB limit. Retain the input and rotations if these records need to be recovered
+through a receiver that accepts them. Changing the endpoint replays retained
+records, including previously skipped records.
+
+Other HTTP failures and ambiguous transport errors keep their full
+unacknowledged request eligible for replay. Receivers must reject a `413` request
+without ingesting it; if they ingest any part before rejecting, the split retries
+can duplicate those records. A `2xx` must mean the whole request was accepted.
+Splitting is specific to `ship`; direct HTTP output remains best-effort.
+
 `ship` never truncates or rotates the input. Retention remains the operator's
 responsibility, and undelivered records are only as durable as that file and its
 host. A complete record larger than 8 MiB remains in the input but is skipped
@@ -502,7 +529,9 @@ Prefer an existing fleet forwarder when one is already available.
 `--http-allow-insecure` match the [scan HTTP options](#scan), including the wire
 contract and environment-only secrets. Failed delivery retries use exponential
 backoff with jitter. `ship` runs until SIGINT or SIGTERM; an in-flight request
-is bounded by `--http-timeout`.
+is bounded by `--http-timeout`. During adaptive delivery, a successful in-flight
+request is checkpointed before shutdown, and no further split request starts
+after cancellation is observed.
 
 ## hook
 
