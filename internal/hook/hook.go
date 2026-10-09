@@ -998,6 +998,7 @@ func mapEvent(lc Lifecycle, agent, sourceAgent, eventID string, payload map[stri
 		SourceType:    model.SourceHook,
 		Timestamp:     r.timestamp(),
 		SessionID:     r.sessionID(),
+		SessionTreeID: r.sessionTreeID(),
 		ProjectPath:   r.cwd(),
 		Actor:         model.ActorAssistant,
 		// A hook is a live signal with no artifact line to verify against, so its
@@ -1006,6 +1007,7 @@ func mapEvent(lc Lifecycle, agent, sourceAgent, eventID string, payload map[stri
 		Confidence: model.ConfidenceMedium,
 		Evidence:   model.Evidence{ArtifactType: model.SourceHook},
 	}
+	ev.SubAgentID = r.subAgentID()
 	ev.Model = r.envStr("model", "model_name", "modelName")
 	ev.ModelProvider = r.envStr("model_provider", "modelProvider", "provider_name", "providerName")
 	if agent == AgentCursor {
