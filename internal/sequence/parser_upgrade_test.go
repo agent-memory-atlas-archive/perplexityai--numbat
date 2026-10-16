@@ -24,15 +24,22 @@ func TestStoreParserUpgradeInvalidatesVerdicts(t *testing.T) {
 	second := ev("second", "", model.EventCommandExec, func(e *model.Event) {
 		e.ToolName, e.Command = "bash", "printf marker"
 	})
-	for _, revision := range []string{"sequence-projection-v6", "sequence-projection-v7", sequenceProjectionRevision} {
-		t.Run(revision, func(t *testing.T) {
+	for _, tc := range []struct {
+		revision string
+		want     int
+	}{
+		{"sequence-projection-v6", 0},
+		{"sequence-projection-v7", 0},
+		{sequenceProjectionRevision, 1},
+	} {
+		t.Run(tc.revision, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "state.db")
 			db := openDB(t, path)
 			_ = newStore(t, db, rules, DefaultConfig())
 			// An older parser accepted a prefix while missing its dynamic tail.
 			// These are the resulting persisted verdicts, not retained source.
 			raw, err := json.Marshal(storedSession{
-				RulesHash: fingerprintForProjection(rules, revision),
+				RulesHash: fingerprintForProjection(rules, tc.revision),
 				NextSeq:   1,
 				Entries: []storedEntry{{
 					Seq: 0, EventID: first.EventID, Evidence: first.Evidence,
@@ -57,12 +64,8 @@ func TestStoreParserUpgradeInvalidatesVerdicts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := 0
-			if revision == sequenceProjectionRevision {
-				want = 1
-			}
-			if len(observation.Findings) != want || len(observation.EnforcementRules) != want {
-				t.Fatalf("revision %s restored stale or lost current verdicts: %+v", revision, observation)
+			if len(observation.Findings) != tc.want || len(observation.EnforcementRules) != tc.want {
+				t.Fatalf("revision %s restored stale or lost current verdicts: %+v", tc.revision, observation)
 			}
 		})
 	}
