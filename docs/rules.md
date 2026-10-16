@@ -170,9 +170,10 @@ cleaned as an absolute path. A spelling with no `/`, or one that still contains
 unexpanded value may span any number of directories. It does not expand
 variables, distinguish quoted from unquoted operands, resolve a relative path
 against the working directory, or follow symlinks. It has no Windows
-semantics: any slash-prefixed string gets POSIX cleaning, and drive letters
-and backslashes pass through unchanged. Use `command.arguments` when quoting
-or expansion matters.
+semantics: any slash-prefixed string gets POSIX cleaning, a drive-letter
+operand is handled like any relative path (first segment kept, the rest
+cleaned), and backslashes are never separators. Use `command.arguments` when
+quoting or expansion matters.
 
 Do not add `tool.call` as a catch-all branch to a command rule. Generic tool
 calls have no `event.command`; write a separate tool rule only when the generic
@@ -608,7 +609,7 @@ hook callbacks persist their bounded window in `$HOME/.numbat/state.db`
 (`--state-db` overrides the path). A change to the loaded sequence-rule set
 that affects matching, enforcement, or rule version invalidates old windows.
 Parser and projection updates also invalidate old verdicts; the current
-projection revision is `sequence-projection-v8`. If
+projection revision is `sequence-projection-v9`. If
 the state cannot be opened, correlation fails open with a warning.
 
 An enforced sequence may block only the action matching its final step.
