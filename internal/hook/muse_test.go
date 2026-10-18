@@ -8,8 +8,8 @@ import (
 	"github.com/perplexityai/numbat/internal/model"
 )
 
-// Field shapes below are sanitized from real `muse exec` hook captures
-// (Muse Code 1.3.0). The response contract is documented at
+// Baseline field shapes are sanitized from real `muse exec` hook captures
+// (Muse Code 1.3.0); later captures are identified below. The response contract is at
 // https://meta-models.github.io/muse-code-sdk/next/guides/extend/hooks/. Muse's
 // hook_event_name/session_id/tool_name/tool_input/tool_use_id/cwd names share
 // the Claude-shaped resolver. These captures include JSON-encoded string
@@ -125,6 +125,19 @@ func TestMuseToolMapping(t *testing.T) {
 			},
 			want:  model.EventFileWrite,
 			value: "output.txt",
+		},
+		{
+			// Native Muse 1.4.10 PreToolUse capture; values are synthetic.
+			name: "edit_file uses the path field",
+			payload: map[string]any{
+				"hook_event_name": "PreToolUse",
+				"tool_name":       "edit_file",
+				"tool_input":      map[string]any{"path": ".agents/memory/topic.md", "find": "before", "replace": "after"},
+				"tool_use_id":     "call_6",
+				"session_id":      "sess-1",
+			},
+			want:  model.EventFileWrite,
+			value: ".agents/memory/topic.md",
 		},
 		{
 			name: "unconfirmed/bookkeeping tools stay generic, never fabricated as shell or file",

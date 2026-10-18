@@ -2461,21 +2461,27 @@ func portableToolFamily(agent, name string) string {
 			return "web"
 		}
 	case AgentMuse:
-		// Only tool names covered by captured fixtures are mapped. Muse also
-		// exposes edit_file, web_fetch, web_search, subagent_*, and internal
-		// bookkeeping tools (submit_reminder_decision) whose input shapes were
-		// never observed live; they stay generic tool.call rather than being
-		// guessed at, per numbat's no-fabrication contract.
+		// Map observed native tool inputs; leave other tools generic rather
+		// than guessing their argument semantics.
 		switch lower {
 		case "bash":
 			return "shell"
 		case "read_file":
 			return "read"
-		case "write_file":
+		case "write_file", "edit_file":
 			return "write"
 		}
 	}
 	return ""
+}
+
+func portableFilePath(agent string, input map[string]any) string {
+	if agent == AgentMuse {
+		// Muse acts on path, ignoring aliases supplied alongside it.
+		path, _ := input["path"].(string)
+		return path
+	}
+	return firstString(input, "file_path", "filePath", "path")
 }
 
 func classifyPortableTool(ev *model.Event, r *resolver, post bool) {
@@ -2549,13 +2555,13 @@ func classifyPortableTool(ev *model.Event, r *resolver, post bool) {
 		}
 	case "read":
 		ev.EventType = model.EventFileRead
-		ev.FilePath = firstString(input, "file_path", "filePath", "path")
+		ev.FilePath = portableFilePath(r.agent, input)
 		if ev.FilePath == "" && r.agent == AgentKiro {
 			ev.FilePath = firstOperationPath(input)
 		}
 	case "write":
 		ev.EventType = model.EventFileWrite
-		ev.FilePath = firstString(input, "file_path", "filePath", "path")
+		ev.FilePath = portableFilePath(r.agent, input)
 		if ev.FilePath == "" && r.agent == AgentKiro {
 			ev.FilePath = firstOperationPath(input)
 		}
