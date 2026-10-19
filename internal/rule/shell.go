@@ -1053,12 +1053,8 @@ func projectedPowerShellScript(args []ShellArgument) (string, commandDialect, in
 			return "", dialectAuto, 0, false, errors.New("shell command analysis: dynamic PowerShell option")
 		}
 		flag := args[i].Value
-		lower := strings.ToLower(flag)
-		if name, _, found := strings.Cut(lower, ":"); found {
-			lower = name
-		}
-		switch lower {
-		case "-c", "-command":
+		switch powerShellOption(flag) {
+		case "-command":
 			if i+1 >= len(args) {
 				return "", dialectAuto, 0, false, errors.New("shell command analysis: PowerShell command option without value")
 			}
@@ -1067,7 +1063,7 @@ func projectedPowerShellScript(args []ShellArgument) (string, commandDialect, in
 				return "", dialectAuto, 0, false, errors.New("shell command analysis: dynamic PowerShell command input")
 			}
 			return script, dialectPowerShell, i + 1, true, nil
-		case "-commandwithargs", "-cwa":
+		case "-commandwithargs":
 			if i+1 >= len(args) {
 				return "", dialectAuto, 0, false, errors.New("shell command analysis: PowerShell command option without value")
 			}
@@ -1076,7 +1072,7 @@ func projectedPowerShellScript(args []ShellArgument) (string, commandDialect, in
 				return "", dialectAuto, 0, false, errors.New("shell command analysis: dynamic PowerShell command input")
 			}
 			return script, dialectPowerShell, i + 1, true, nil
-		case "-e", "-ec", "-enc", "-encodedcommand":
+		case "-encodedcommand":
 			if i+1 >= len(args) || args[i+1].Expands {
 				return "", dialectAuto, 0, false, errors.New("shell command analysis: invalid PowerShell encoded command")
 			}
@@ -1085,10 +1081,10 @@ func projectedPowerShellScript(args []ShellArgument) (string, commandDialect, in
 				return "", dialectAuto, 0, false, errors.New("shell command analysis: invalid PowerShell encoded command")
 			}
 			return script, dialectPowerShell, i + 1, true, nil
-		case "-f", "-file", "-filewithargs", "-help", "-?", "-h":
+		case "-file", "-filewithargs", "-help":
 			return "", dialectAuto, 0, false, nil
-		case "-configurationfile", "-configurationname", "-config", "-custompipename",
-			"-encodedarguments", "-executionpolicy", "-ex", "-ep",
+		case "-configurationfile", "-configurationname", "-custompipename",
+			"-encodedarguments", "-executionpolicy",
 			"-inputformat", "-outputformat", "-settingsfile", "-windowstyle",
 			"-workingdirectory", "-psconsolefile", "-version":
 			if !strings.Contains(flag, ":") {
@@ -1098,7 +1094,7 @@ func projectedPowerShellScript(args []ShellArgument) (string, commandDialect, in
 				}
 			}
 		case "-interactive", "-login", "-mta", "-noexit", "-nologo", "-noninteractive",
-			"-noni", "-noprofile", "-nop", "-noprofileloadtime", "-sta":
+			"-noprofile", "-noprofileloadtime", "-sta":
 		default:
 			if !strings.HasPrefix(flag, "-") {
 				return "", dialectAuto, 0, false, nil
