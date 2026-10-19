@@ -43,7 +43,11 @@ func canonicalPath(value string) string {
 				if loc == nil {
 					break
 				}
-				value = "/" + value[loc[1]:]
+				if loc[1] == len(value) {
+					return "/"
+				}
+				// Keep the matched slash without copying the remaining path.
+				value = value[loc[1]-1:]
 			}
 			cleaned := path.Clean(value)
 			if cleaned == value {
