@@ -329,6 +329,9 @@ events by `source_agent`, `source_type`, active `session_id`, and
 `sub_agent_id` when provided; sessionless at-rest events fall back to their
 artifact path. The session header shows available tree, parent, role, and child
 identity context. Each chronological step retains its evidence reference.
+The header's `sub_agent` label is shown only when every event has the same
+non-empty value. Per-event attribution is preserved when the header label is
+omitted.
 
 Unlike sequence correlation, a timeline does not split a conversation when the
 project path is missing or the agent changes its working directory;

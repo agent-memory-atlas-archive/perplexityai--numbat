@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/perplexityai/numbat/internal/model"
@@ -101,6 +105,86 @@ func TestGroupSessionsUsesChildIDWhenHostSessionIsShared(t *testing.T) {
 	})
 	if len(got) != 2 || got[0].SubAgentID == got[1].SubAgentID {
 		t.Fatalf("shared host session collapsed concurrent children: %+v", got)
+	}
+}
+
+func TestTimelineSubagentLabel(t *testing.T) {
+	for _, tc := range []struct {
+		name, childID, want string
+		labels              []string
+	}{
+		{name: "parent", labels: []string{"", ""}},
+		{name: "single child", labels: []string{"child-a"}, want: "child-a"},
+		{name: "same child", labels: []string{"child-a", "child-a"}, want: "child-a"},
+		{name: "identified child", childID: "child-1", labels: []string{"default", "default"}, want: "default"},
+		{name: "parent then child", labels: []string{"", "child-a"}},
+		{name: "child then parent", labels: []string{"child-a", ""}},
+		{name: "siblings", labels: []string{"child-a", "child-b"}},
+		{name: "parent and siblings", labels: []string{"", "child-a", "child-b"}},
+		{name: "no relabel after mismatch", labels: []string{"child-a", "child-b", "child-a"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := make([]model.Event, len(tc.labels))
+			for i, label := range tc.labels {
+				events[i] = ev("claude-code", "root-1",
+					fmt.Sprintf("2026-06-02T10:00:%02dZ", i), model.EventPromptUser,
+					fmt.Sprintf("/artifact-%d.jsonl", i))
+				events[i].EventID = fmt.Sprintf("event-%d", i)
+				events[i].SubAgent = label
+				events[i].SubAgentID = tc.childID
+			}
+			var firstJSON string
+			for _, reverse := range []bool{false, true} {
+				input := append([]model.Event(nil), events...)
+				if reverse {
+					for i, j := 0, len(input)-1; i < j; i, j = i+1, j-1 {
+						input[i], input[j] = input[j], input[i]
+					}
+				}
+				sessions := groupSessions(input)
+				if len(sessions) != 1 || sessions[0].SessionID != "root-1" || sessions[0].SubAgentID != tc.childID {
+					t.Fatalf("group identity changed: %+v", sessions)
+				}
+				if sessions[0].SubAgent != tc.want {
+					t.Errorf("header label = %q, want %q", sessions[0].SubAgent, tc.want)
+				}
+				if !reflect.DeepEqual(sessions[0].Events, events) {
+					t.Fatal("grouping changed event fields, evidence, or chronological order")
+				}
+				var out, stderr bytes.Buffer
+				if code := renderTimelineJSON(sessions, &out, &stderr); code != 0 {
+					t.Fatalf("render JSON: exit=%d, stderr=%s", code, &stderr)
+				}
+				var report struct {
+					Sessions []map[string]json.RawMessage `json:"sessions"`
+				}
+				if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+					t.Fatal(err)
+				}
+				if _, present := report.Sessions[0]["sub_agent"]; present != (tc.want != "") {
+					t.Errorf("JSON header label present=%v, want %v", present, tc.want != "")
+				}
+				if reverse && out.String() != firstJSON {
+					t.Error("JSON changed with reversed input")
+				}
+				firstJSON = out.String()
+				out.Reset()
+				if err := renderTimelineText(sessions, &out); err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(out.String(), "  subagent: ") != (tc.want != "") {
+					t.Errorf("unexpected text header label:\n%s", &out)
+				}
+				if tc.want != "" && !strings.Contains(out.String(), "  subagent: "+tc.want+"\n") {
+					t.Errorf("text header missing label %q:\n%s", tc.want, &out)
+				}
+				for _, event := range events {
+					if !strings.Contains(out.String(), event.Evidence.LocalPath) {
+						t.Errorf("text omitted evidence %q", event.Evidence.LocalPath)
+					}
+				}
+			}
+		})
 	}
 }
 
