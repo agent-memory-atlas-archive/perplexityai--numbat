@@ -435,7 +435,8 @@ func (a *shellAnalyzer) resolveExecutable(stmt *syntax.Stmt, word *syntax.Word) 
 
 var shellManagedNames = map[string]bool{
 	"_": true, "RANDOM": true, "SRANDOM": true, "SECONDS": true, "LINENO": true,
-	"EPOCHSECONDS": true, "EPOCHREALTIME": true, "HISTCMD": true, "BASHPID": true,
+	"EPOCHSECONDS": true, "EPOCHREALTIME": true, "BASH_MONOSECONDS": true, "HISTCMD": true, "BASHPID": true,
+	"OPTIND": true, "BASH_SUBSHELL": true,
 	"BASH_COMMAND": true, "FUNCNAME": true, "BASH_SOURCE": true, "BASH_LINENO": true,
 	"BASH_ARGV": true, "BASH_ARGC": true, "GROUPS": true, "DIRSTACK": true, "PIPESTATUS": true,
 	"UID": true, "EUID": true, "PPID": true, "SHELLOPTS": true, "BASHOPTS": true, "BASH_VERSINFO": true,
