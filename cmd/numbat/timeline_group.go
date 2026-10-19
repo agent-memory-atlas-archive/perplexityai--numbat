@@ -73,8 +73,11 @@ func groupSessions(events []model.Event) []timelineSession {
 			if b.parent == "" && events[i].ParentSessionID != "" {
 				b.parent = events[i].ParentSessionID
 			}
-			if b.subAgent == "" && events[i].SubAgent != "" {
+			// A mixed group must not inherit one event's attribution.
+			if j == 0 {
 				b.subAgent = events[i].SubAgent
+			} else if b.subAgent != events[i].SubAgent {
+				b.subAgent = ""
 			}
 			if b.subAgentID == "" && events[i].SubAgentID != "" {
 				b.subAgentID = events[i].SubAgentID
