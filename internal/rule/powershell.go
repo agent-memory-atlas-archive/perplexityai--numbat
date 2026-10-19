@@ -21,18 +21,70 @@ const (
 	powerShellWhatIfUncertain
 )
 
+func powerShellOption(flag string) string {
+	name, _, _ := strings.Cut(strings.ToLower(flag), ":")
+	// Minimum prefixes follow PowerShell's CommandLineParameterParser.
+	// Keep host-specific legacy options such as -version exact.
+	for _, option := range []struct{ name, minimum string }{
+		{"-help", "-h"},
+		{"-login", "-l"},
+		{"-noexit", "-noe"},
+		{"-noprofile", "-nop"},
+		{"-nologo", "-nol"},
+		{"-noninteractive", "-noni"},
+		{"-noprofileloadtime", "-noprofileloadtime"},
+		{"-interactive", "-i"},
+		{"-configurationfile", "-configurationfile"},
+		{"-configurationname", "-config"},
+		{"-custompipename", "-cus"},
+		{"-commandwithargs", "-commandwithargs"},
+		{"-command", "-c"},
+		{"-windowstyle", "-w"},
+		{"-file", "-f"},
+		{"-outputformat", "-o"},
+		{"-inputformat", "-inp"},
+		{"-executionpolicy", "-ex"},
+		{"-encodedcommand", "-e"},
+		{"-encodedarguments", "-encodeda"},
+		{"-settingsfile", "-settings"},
+		{"-sta", "-sta"},
+		{"-mta", "-mta"},
+		{"-workingdirectory", "-wo"},
+	} {
+		if len(name) >= len(option.minimum) && strings.HasPrefix(option.name, name) {
+			return option.name
+		}
+	}
+	switch name {
+	case "-?":
+		return "-help"
+	case "-cwa":
+		return "-commandwithargs"
+	case "-of":
+		return "-outputformat"
+	case "-if":
+		return "-inputformat"
+	case "-ep":
+		return "-executionpolicy"
+	case "-ec":
+		return "-encodedcommand"
+	case "-ea":
+		return "-encodedarguments"
+	case "-wd":
+		return "-workingdirectory"
+	default:
+		return name
+	}
+}
+
 func powerShellWrapperScript(source string, args []*syntax.Word) (string, int, bool, error) {
 	for i := 1; i < len(args); i++ {
 		flag, ok := staticWord(args[i])
 		if !ok {
 			return "", 0, false, errors.New("shell command analysis: dynamic PowerShell option")
 		}
-		lower := strings.ToLower(flag)
-		if name, _, found := strings.Cut(lower, ":"); found {
-			lower = name
-		}
-		switch lower {
-		case "-c", "-command":
+		switch powerShellOption(flag) {
+		case "-command":
 			if i+1 >= len(args) {
 				return "", 0, false, errors.New("shell command analysis: PowerShell command option without value")
 			}
@@ -41,7 +93,7 @@ func powerShellWrapperScript(source string, args []*syntax.Word) (string, int, b
 				return "", 0, false, errors.New("shell command analysis: dynamic PowerShell command input")
 			}
 			return script, i + 1, true, nil
-		case "-commandwithargs", "-cwa":
+		case "-commandwithargs":
 			if i+1 >= len(args) {
 				return "", 0, false, errors.New("shell command analysis: PowerShell command option without value")
 			}
@@ -50,7 +102,7 @@ func powerShellWrapperScript(source string, args []*syntax.Word) (string, int, b
 				return "", 0, false, errors.New("shell command analysis: dynamic PowerShell command input")
 			}
 			return script, i + 1, true, nil
-		case "-e", "-ec", "-enc", "-encodedcommand":
+		case "-encodedcommand":
 			if i+1 >= len(args) {
 				return "", 0, false, errors.New("shell command analysis: PowerShell encoded command without value")
 			}
@@ -63,7 +115,7 @@ func powerShellWrapperScript(source string, args []*syntax.Word) (string, int, b
 				return "", 0, false, errors.New("shell command analysis: invalid PowerShell encoded command")
 			}
 			return script, i + 1, true, nil
-		case "-f", "-file", "-filewithargs":
+		case "-file", "-filewithargs":
 			if i+1 < len(args) {
 				value, static := staticWord(args[i+1])
 				if !static || value == "-" {
@@ -71,8 +123,8 @@ func powerShellWrapperScript(source string, args []*syntax.Word) (string, int, b
 				}
 			}
 			return "", 0, false, nil
-		case "-configurationfile", "-configurationname", "-config", "-custompipename",
-			"-encodedarguments", "-executionpolicy", "-ex", "-ep",
+		case "-configurationfile", "-configurationname", "-custompipename",
+			"-encodedarguments", "-executionpolicy",
 			"-inputformat", "-outputformat", "-settingsfile", "-windowstyle",
 			"-workingdirectory", "-psconsolefile", "-version":
 			if strings.Contains(flag, ":") {
@@ -82,10 +134,10 @@ func powerShellWrapperScript(source string, args []*syntax.Word) (string, int, b
 			if i >= len(args) {
 				return "", 0, false, errors.New("shell command analysis: PowerShell option without value")
 			}
-		case "-help", "-?", "-h":
+		case "-help":
 			return "", 0, false, nil
 		case "-interactive", "-login", "-mta", "-noexit", "-nologo", "-noninteractive",
-			"-noni", "-noprofile", "-nop", "-noprofileloadtime", "-sta":
+			"-noprofile", "-noprofileloadtime", "-sta":
 			continue
 		default:
 			if !strings.HasPrefix(flag, "-") {

@@ -434,6 +434,9 @@ not become commands. Data-only literal here-docs stay inert; a here-doc
 supplied to an interpreter such as `sh` is executable input and is parsed.
 Supported static wrappers, inline scripts, substitutions, redirects, and
 shell functions are projected when their meaning can be established.
+Recognized PowerShell launcher options accept case-insensitive, single-dash
+prefixes such as `-encod` and `-comm`; host-specific legacy options retain exact
+spelling.
 
 Known `tool_name` values select POSIX shell, PowerShell, or `cmd.exe` parsing;
 otherwise numbat infers the dialect from command syntax. Shared control-flow
