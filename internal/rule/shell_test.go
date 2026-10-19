@@ -13,6 +13,60 @@ import (
 	"github.com/perplexityai/numbat/internal/model"
 )
 
+func TestInferCommandDialectControlFlow(t *testing.T) {
+	for _, tc := range []struct {
+		source string
+		want   commandDialect
+	}{
+		{`if (true); then printf marker; fi`, dialectPOSIX},
+		{`while (false); do printf marker; done`, dialectPOSIX},
+		{`for ((i=0;i<1;i++)); do printf marker; done`, dialectPOSIX},
+		{`if ($x -eq 1) { Write-Output marker }`, dialectPowerShell},
+		{`elseif ($x -eq 1) { Write-Output marker }`, dialectPowerShell},
+		{`foreach ($x in 1,2) { Write-Output marker }`, dialectPowerShell},
+		{`for ($i=0; $i -lt 1; $i++) { Write-Output marker }`, dialectPowerShell},
+		{`while ($false) { Write-Output marker }`, dialectPowerShell},
+		{`switch ($x) { 1 { Write-Output marker } }`, dialectPowerShell},
+		{`Set-Content output.txt marker`, dialectPowerShell},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			if got := inferCommandDialect(tc.source); got != tc.want {
+				t.Fatalf("dialect = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAnalyzePOSIXControlFlowWithInferredDialect(t *testing.T) {
+	for _, tool := range []string{"shell", "shell_command", "exec_command", "run_shell_command", "Bash"} {
+		for _, tc := range []struct {
+			source string
+			safe   bool
+		}{
+			{`if (true); then printf marker; fi`, true},
+			{`while (false); do printf marker; done`, true},
+			{`for ((i=0;i<1;i++)); do printf marker; done`, false},
+			{`if (true); then printf "$value"; fi`, false},
+		} {
+			t.Run(tool+"/"+tc.source, func(t *testing.T) {
+				a := analyzeEventShellCommandsDetailed(model.Event{ToolName: tool, Command: tc.source})
+				if a.err != nil || !a.usable || a.enforcementSafe != tc.safe {
+					t.Fatalf("usable=%v safe=%v err=%v, want safe=%v", a.usable, a.enforcementSafe, a.err, tc.safe)
+				}
+				found := false
+				for _, command := range a.commands {
+					if command.Name == "printf" && command.Dialect == "posix" {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("missing POSIX printf: %+v", a.commands)
+				}
+			})
+		}
+	}
+}
+
 func TestAnalyzeShellCommands(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

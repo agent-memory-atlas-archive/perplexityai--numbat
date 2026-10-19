@@ -436,8 +436,9 @@ Supported static wrappers, inline scripts, substitutions, redirects, and
 shell functions are projected when their meaning can be established.
 
 Known `tool_name` values select POSIX shell, PowerShell, or `cmd.exe` parsing;
-otherwise numbat infers the dialect from command syntax. Set `tool_name` in a
-fixture when a Windows command depends on a specific dialect.
+otherwise numbat infers the dialect from command syntax. Shared control-flow
+prefixes such as `if (` prefer POSIX when the complete command parses as POSIX.
+Set `tool_name` in a fixture when a Windows command depends on a specific dialect.
 
 If part of a command is dynamic, malformed, unsupported, or over a parser
 bound, numbat emits a diagnostic. Proven independent commands remain available
