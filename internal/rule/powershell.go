@@ -129,6 +129,16 @@ func inferCommandDialect(source string) commandDialect {
 	lower := strings.ToLower(strings.TrimSpace(source))
 	for _, prefix := range []string{
 		"if (", "elseif (", "foreach (", "for (", "while (", "switch (",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			// These prefixes are not sufficient to distinguish shell dialects.
+			if _, err := parseShell(source); err == nil {
+				return dialectPOSIX
+			}
+			return dialectPowerShell
+		}
+	}
+	for _, prefix := range []string{
 		"try {", "catch {", "finally {", "& {", ". {", "@(",
 		"register-scheduledtask ", "set-content ", "add-content ", "clear-content ",
 		"out-file ", "copy-item ", "move-item ", "remove-item ", "new-item ",

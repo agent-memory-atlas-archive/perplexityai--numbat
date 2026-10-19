@@ -193,6 +193,64 @@ expr: |
   )
 `
 
+func TestHookInferredPOSIXControlFlow(t *testing.T) {
+	const policy = `id: test.posix_control_flow
+version: "1"
+title: Static printf command
+severity: high
+enforce: true
+expr: shell_commands.exists(c, c.name == "printf")
+`
+	for _, host := range []struct{ agent, event, tool, key string }{
+		{"codex", "codex-pre-tool", "shell", "command"},
+		{"codex", "codex-pre-tool", "exec_command", "cmd"},
+		{"gemini", "gemini-pre-tool", "run_shell_command", "command"},
+	} {
+		for _, tc := range []struct {
+			command string
+			safe    bool
+		}{
+			{`if (true); then printf marker; fi`, true},
+			{`for ((i=0;i<1;i++)); do printf marker; done`, false},
+		} {
+			for _, enforce := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/%t", host.tool, tc.command, enforce), func(t *testing.T) {
+					rulesDir := writeEnforceRuleFile(t, policy)
+					path := filepath.Join(t.TempDir(), "findings.ndjson")
+					payload, err := json.Marshal(map[string]any{
+						"session_id": "test", "tool_name": host.tool,
+						"tool_input": map[string]string{host.key: tc.command},
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					args := []string{
+						"hook", host.event, "--agent", host.agent, "--rules-dir", rulesDir,
+						"--output", "file", "--output-file", path,
+					}
+					if enforce {
+						args = append(args, "--enforce")
+					}
+					out, errb, code := runCLIStdin(string(payload), args...)
+					if code != 0 || errb != "" {
+						t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, errb)
+					}
+					if denied := strings.Contains(out, `"deny"`); denied != (enforce && tc.safe) {
+						t.Fatalf("unexpected deny response: %s", out)
+					}
+					records, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(string(records), `"rule_id":"test.posix_control_flow"`) {
+						t.Fatalf("missing finding: %s", records)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestBuiltinOverrideCanEnableEnforcement(t *testing.T) {
 	setTestHome(t, t.TempDir())
 	payload := `{"session_id":"s1","cwd":"/proj","tool_name":"Bash","tool_input":{"command":"OVERRIDE_ONLY"}}`
