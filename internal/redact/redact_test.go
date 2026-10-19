@@ -823,6 +823,26 @@ func TestStringMasksFragmentAfterQuery(t *testing.T) {
 	}
 }
 
+func TestStringMasksAssignmentsAfterURLQuery(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"space", "https://x.test/?limit=10 DB_PASSWORD=example-value", "https://x.test/?limit=10 DB_PASSWORD=[redacted]"},
+		{"tab", "https://x.test/?limit=10\tAPP_TOKEN=example-value", "https://x.test/?limit=10\tAPP_TOKEN=[redacted]"},
+		{"colon", "https://x.test/?limit=10 app_secret: example-value", "https://x.test/?limit=10 app_secret: [redacted]"},
+		{"command list", "curl https://x.test/?limit=10 && DB_PASSWORD=example-value ./run", "curl https://x.test/?limit=10 && DB_PASSWORD=[redacted] ./run"},
+		{"http", "http://x.test/?limit=10 APP_API_KEY=example-value", "http://x.test/?limit=10 APP_API_KEY=[redacted]"},
+		{"newline", "https://x.test/?limit=10\nDB_PASSWORD=example-value", "https://x.test/?limit=10\nDB_PASSWORD=[redacted]"},
+		{"no query", "https://x.test/path DB_PASSWORD=example-value", "https://x.test/path DB_PASSWORD=[redacted]"},
+		{"benign query key", "https://x.test/?id_token=public-label DB_PASSWORD=example-value", "https://x.test/?id_token=public-label DB_PASSWORD=[redacted]"},
+		{"encoded query space", "https://x.test/?id_token=public%20label&mytoken=other", "https://x.test/?id_token=public%20label&mytoken=other"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := String(tc.in); got != tc.want {
+				t.Fatalf("String(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestStringMasksSecretInsideAndOutsideURL covers a secret present both as a
 // non-URL assignment and inside a URL query in the same string: both must be
 // masked and benign structure preserved.

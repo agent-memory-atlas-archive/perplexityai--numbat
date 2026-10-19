@@ -211,14 +211,10 @@ func uriAuthorityTerminator(b byte) bool {
 // urlPattern matches an http(s) URL substring inside arbitrary text. It is used
 // only to fence off URL regions so the broad assignment pass (which would
 // clobber a benign param like id_token) runs only on non-URL text. The
-// scheme/authority/path run ends at whitespace or a quote/bracket/brace; an
-// optional query run is held together through raw query bytes up to a
-// newline/quote/bracket/backslash/backtick. It is best-effort: it does NOT
-// decide what to redact — the value-driven pass already did — so an imperfect
-// span only affects where the (precise) assignment pass is suppressed, never
-// whether a credential leaks.
+// query must also end at whitespace so assignments after a URL still receive
+// the broad pass. Exact credential parameters are masked independently.
 var urlPattern = regexp.MustCompile(`https?://[^\s?"'<>\\` + "`" + `]*` +
-	`(?:\?[^"'<>\\` + "`" + `\r\n]*)?`)
+	`(?:\?[^\s"'<>\\` + "`" + `]*)?`)
 
 // Spaces are not terminators: masking through them avoids exposing a secret tail
 // in malformed or deliberately split values. This can conservatively mask prose
