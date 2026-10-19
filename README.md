@@ -76,6 +76,10 @@ numbat scan
 numbat scan --agent codex
 ```
 
+`scan` emits findings by default. Use `numbat scan --emit all` to include
+events and indicators. See [content capture](docs/content-capture.md) for
+preview, full, and raw output modes.
+
 ### Monitor and enforce
 
 Install live monitoring for any agent with
@@ -88,6 +92,10 @@ writes events, findings, indicators, and applicable enforcement decisions to
 numbat hook install --agent codex --emit all
 numbat hook status --agent codex
 ```
+
+After upgrading numbat, rerun `hook install` for each installed agent with the
+same options. This updates generated hooks and plugins; review host trust
+again if their definitions change.
 
 > **Hook trust:** Requirements vary by agent and scope. For the Codex user hook
 > above, review and trust its current definition in `/hooks` (CLI) or
