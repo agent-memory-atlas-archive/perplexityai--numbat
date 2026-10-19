@@ -31,14 +31,15 @@ func TestStoreParserUpgradeInvalidatesVerdicts(t *testing.T) {
 		{"sequence-projection-v6", 0},
 		{"sequence-projection-v7", 0},
 		{"sequence-projection-v8", 0},
+		{"sequence-projection-v9", 0},
 		{sequenceProjectionRevision, 1},
 	} {
 		t.Run(tc.revision, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "state.db")
 			db := openDB(t, path)
 			_ = newStore(t, db, rules, DefaultConfig())
-			// An older parser accepted a prefix while missing its dynamic tail.
-			// These are the resulting persisted verdicts, not retained source.
+			// Older projections could accept commands that current analysis rejects.
+			// These are persisted verdicts, not retained source.
 			raw, err := json.Marshal(storedSession{
 				RulesHash: fingerprintForProjection(rules, tc.revision),
 				NextSeq:   1,

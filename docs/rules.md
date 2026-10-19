@@ -426,6 +426,9 @@ variable and the script contains nothing that can change variables behind the
 analyzer's back, such as `trap`, `eval`, `source`, `declare`, `export`,
 `readonly`, `set`, `IFS`, or arithmetic assignment; this list is not
 exhaustive and inline child scripts do not inherit assignments.
+Shell-managed names such as `RANDOM`, `OPTIND`, `BASH_SUBSHELL`, and
+`BASH_MONOSECONDS` also stay unresolved: an assignment is not proof of their
+runtime value.
 Other variables stay unexpanded. Comments and quoted examples do
 not become commands. Data-only literal here-docs stay inert; a here-doc
 supplied to an interpreter such as `sh` is executable input and is parsed.
@@ -609,7 +612,7 @@ hook callbacks persist their bounded window in `$HOME/.numbat/state.db`
 (`--state-db` overrides the path). A change to the loaded sequence-rule set
 that affects matching, enforcement, or rule version invalidates old windows.
 Parser and projection updates also invalidate old verdicts; the current
-projection revision is `sequence-projection-v9`. If
+projection revision is `sequence-projection-v10`. If
 the state cannot be opened, correlation fails open with a warning.
 
 An enforced sequence may block only the action matching its final step.
